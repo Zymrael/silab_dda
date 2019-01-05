@@ -25,34 +25,47 @@ def fourier_split(psd, size):
     '''
     return psd[0:size],psd[size:2*size],psd[2*size:3*size]
 
-def pred_accuracy(m, valloader, val_size, domain_adaptation = False):
+def pred_accuracy(m, valloader, val_size, domain_adaptation = False, source_included = True):
     '''
     Calculates accuracy from a given model and test DataLoader
+    For regular non-domain adaptation application, leave as-is
     '''
     m.eval()
     count = 0
-    y_hat = np.zeros(int(val_size))
+    count_tr = 0
+    count_sr = 0
     numberSourceDomain = 0
+    numberTargetDomain = 0
+    assert isinstance(domain_adaptation,bool)
+    assert isinstance(source_included,bool)
     if not domain_adaptation: dom_flag = 1
-    
+        
     for i, data in enumerate(valloader):
-        if domain_adaptation: x_val, y_val, dom_flag = data
-        else:
-            try:
-                x_val, y_val = data
-            except:
-                x_val, y_val, _ = data
+        try:
+            x_val, y_val, dom_flag = data
+        except:
+            x_val, y_val, _ = data
             
-        if dom_flag == 0:
-            # sampled example from source domain, increase counter and ignore rest
+        if dom_flag == 1:
+            # sampled example from source domain, increase count
             numberSourceDomain += 0
-                
-        if dom_flag == 1 or domain_adaptation == False:
-            pr = m(x_val.view(1,-1))
-            val, indx = torch.max(pr,1)
-            if y_val - indx == 0:
-                count += 1
-    return count/int(val_size - numberSourceDomain)
+        if not domain_adaptation and dom_flag == 0:
+            # sampled from target domain. if not in a domain adaptation scenario, count
+            numberTargetDomain += 1
+
+        pr = m(x_val)
+        val, indx = torch.max(pr,1)
+        if y_val - indx == 0:
+            if (source_included and dom_flag == 1):
+                count_sr += 1
+            elif dom_flag == 0 and domain_adaptation:
+                count_tr += 1
+            else:
+                pass
+                   
+    if (source_included and domain_adaptation): return (count_tr+count_sr)/int(val_size)
+    elif domain_adaptation and not source_included: return  count_tr/int(val_size-numberSourceDomain)
+    else: return count_sr/int(val_size - numberTargetDomain)
 
 class Attention(nn.Module):
     '''

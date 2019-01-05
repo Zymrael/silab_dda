@@ -43,6 +43,7 @@ class simple_CNN(nn.Module):
                                      for i in range(len(conv_layers) - 1)])
         self.dense_layers = nn.ModuleList([nn.Linear(num_units, 4)])
         #self.noise = GaussianNoise(0.05)
+        self.max = nn.MaxPool1d(2)
     def forward(self, x):
         x = x.view(x.size(0), 1, -1)
         #if self.training():
@@ -50,13 +51,46 @@ class simple_CNN(nn.Module):
         for l in self.conv_layers:
             x = l(x)
             x = F.relu(x)
+            x = self.max(x)
         x = x.view(x.size(0), -1)
         for l in self.dense_layers:
             l_x = l(x)
             x = F.relu(l_x)
         return F.log_softmax(l_x, dim=-1)
  
+class DANN(nn.Module):
+    def __init__(self, feature_e, domain_d, label_d):
+        super().__init__()
+        self.feature_extractor = feature_e
+        self.domain_discriminator = domain_d
+        self.label_discriminator = label_d
+        self.gradient_reversal = GradReverse
     
+    def get_parameters(self):
+        return None
+    
+    def forward(self,x):
+        x = x.view(x.size(0), 1, -1)
+        z = self.feature_extractor(x)
+        label = self.label_discriminator(z)
+        z1 = self.gradient_reversal(z)
+        domain = self.domain_discriminator(z1)
+        return label, domain
+    
+    def fit(epochs = 5, optimizer = None, loader = None):
+        opt = optimizer
+        for i in range(epochs):
+            run_loss = 0
+            for i, data in enumerate(loader):
+                x,y,l = data
+                optimizer.zero_grad()
+                yhat = self.forward(x)
+                loss
+        return None
+            
+            
+        
+        
 class VibNet(nn.Module):
     '''
     Multi-head TCN for raw single channel sequential data

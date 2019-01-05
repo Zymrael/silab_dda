@@ -26,8 +26,8 @@ class TDDA_loader():
             pass
         
         if drop_transient:
-            for dataset in self.data:
-                dataset = dataset[:,800::]
+            for i, dataset in enumerate(self.data):
+                self.data[i] = dataset[:,800::]
         
         # assume 100% training if not specified otherwise
         self.split = split
@@ -43,7 +43,7 @@ class TDDA_loader():
         '''
         self.split = percentage
         
-    def getDataLoader(self, sz_sourceDomain = 400, num_workers = 0, shuffle = True, batch_size = 1):
+    def getDataLoader(self, sz_sourceDomain = 1600, num_workers = 0, shuffle = True, batch_size = 1):
         '''
         returns PyTorch train, test dataloaders
         if split = 1, returns only trainDataLoader. Otherwise, returns trainDataLoader, testDataLoader
@@ -51,23 +51,33 @@ class TDDA_loader():
         data_list = []
         data = []
         label= []
+        # count how many data points in source and target domains
+        src_count = {}
+        tgt_count = {}
+        
         for i,d in enumerate(self.data):
-            data = np.concatenate([self.data[i][:,:2000] for i in range(len(self.data))])
-            label = np.concatenate([self.data[i][:,2001] for i in range(len(self.data))])
+            data = np.concatenate([self.data[i][:,:d.shape[1]] for i in range(len(self.data))])
+            label = np.concatenate([self.data[i][:,d.shape[1]-1] for i in range(len(self.data))])
         
         # shift down to 0,1,2,3 instead of 1,2,3,4
         label = label - 1
         
         assert self.split <= 1 and self.split >= 0, 'Split percentage not between 0 and 1'
         # double int label. Second column indicates domain label
-        domain_lbl = np.concatenate((np.ones(400),np.zeros(len(data)-sz_sourceDomain)),axis = 0)
+        domain_lbl = np.concatenate((np.ones(sz_sourceDomain),np.zeros(len(data)-sz_sourceDomain)),axis = 0)
         label = np.transpose(np.vstack((label,domain_lbl)))
         # dependency on sklearn.cross_validation / can be eliminated                      
         x_train, x_test, y_train, y_test = train_test_split(data, label, test_size=1-self.split)
         train = TensorDataset(torch.Tensor(x_train), torch.Tensor(y_train[:,0]).to(torch.long),\
                               torch.Tensor(y_train[:,1]).to(torch.long))
+        src_count[0] = np.count_nonzero(y_train[:,1])
+        tgt_count[0] = len(train) - src_count[0]
+                
         test = TensorDataset(torch.Tensor(x_test), torch.Tensor(y_test[:,0]).to(torch.long),\
                              torch.Tensor(y_test[:,1]).to(torch.long))
+        src_count[1] = np.count_nonzero(y_test[:,1])
+        tgt_count[1] = len(test) - src_count[1]
+        
         trainloader = DataLoader(train, batch_size=batch_size,
                             shuffle=shuffle, num_workers=num_workers)
         try:
@@ -75,7 +85,11 @@ class TDDA_loader():
                                 shuffle=shuffle, num_workers=num_workers)
             print('Number of examples in train and test dataloaders: train = {}, test = {}.'\
                   .format(len(trainloader), len(testloader)))
+            print('Source, target domain data points in train dataloader: {}, {}; test dataloader: {}, {}.'\
+                 .format(src_count[0], tgt_count[0], src_count[1], tgt_count[1]))
             return (trainloader, testloader)
         except:
             print('Number of examples in the dataloader: {}'.format(len(trainloader)))
+            print('Source, target domain data points in train dataloader: {}, {}.'\
+                 .format(src_count[0], tgt_count[0]))
             return trainloader       
