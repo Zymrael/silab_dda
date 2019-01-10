@@ -5,9 +5,10 @@ Created on Fri Dec 14 08:28:23 2018
 @author: Zymieth
 """
 from .imports import *
-from .utils import *
+from .utils import pred_accuracy, split_pred_accuracy
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import *
 import torch
 
 class GaussianNoise(nn.Module):
@@ -37,11 +38,11 @@ def grad_reverse(x):
 
 
 class simple_CNN(nn.Module):
-    def __init__(self, conv_layers, num_units = 1964):
+    def __init__(self, conv_layers, num_units = 1964, output_dim = 4):
         super().__init__()
         self.conv_layers = nn.ModuleList([nn.Conv1d(conv_layers[i], conv_layers[i + 1], kernel_size = 10, dilation=1) 
                                      for i in range(len(conv_layers) - 1)])
-        self.dense_layers = nn.ModuleList([nn.Linear(num_units, 4)])
+        self.dense_layers = nn.ModuleList([nn.Linear(num_units, output_dim)])
         #self.noise = GaussianNoise(0.05)
         self.max = nn.MaxPool1d(2)
     def forward(self, x):
@@ -59,12 +60,12 @@ class simple_CNN(nn.Module):
         return F.log_softmax(l_x, dim=-1)
  
 class DANN(nn.Module):
-    def __init__(self, feature_e, domain_d, label_d):
+    def __init__(self, feature_e, label_d, domain_d):
         super().__init__()
         self.feature_extractor = feature_e
-        self.domain_discriminator = domain_d
         self.label_discriminator = label_d
-        self.gradient_reversal = GradReverse
+        self.domain_discriminator = domain_d
+
     
     def get_parameters(self):
         return None
@@ -73,19 +74,63 @@ class DANN(nn.Module):
         x = x.view(x.size(0), 1, -1)
         z = self.feature_extractor(x)
         label = self.label_discriminator(z)
-        z1 = self.gradient_reversal(z)
+        z1 = grad_reverse(z)
         domain = self.domain_discriminator(z1)
         return label, domain
     
-    def fit(epochs = 5, optimizer = None, loader = None):
+    def domain_fit(self, optimizer = None, epochs = 3, sourceTrain = None, sourceTest = None,\
+                   targetTrain = None, targetTest = None, print_info = True, every_iter = 300):
+        
+        no_domain = False
         opt = optimizer
-        for i in range(epochs):
+   
+        for epoch in range(epochs):
             run_loss = 0
-            for i, data in enumerate(loader):
-                x,y,l = data
+            count = 0
+            s = iter(sourceTrain)
+            t = iter(targetTrain)
+            onesDL = DataLoader(torch.Tensor(torch.ones(len(targetTrain))).to(torch.long),\
+                            batch_size=sourceTrain.batch_size,shuffle=False,\
+                            num_workers=sourceTrain.num_workers)
+            one = iter(onesDL)
+            zerosDL = DataLoader(torch.Tensor(torch.zeros(len(targetTrain))).to(torch.long),\
+                            batch_size=targetTrain.batch_size,shuffle=False,\
+                            num_workers=targetTrain.num_workers)
+            zero = iter(zerosDL)
+                        
+            for i in range(len(sourceTrain)):
+                lamb = epoch/epochs
                 optimizer.zero_grad()
-                yhat = self.forward(x)
-                loss
+                
+                x, y = s.next()   
+                o = one.next()
+                yhat, yhat_domain = self.forward(x)
+                loss_s = F.nll_loss(yhat,y) 
+                loss_sd = lamb * F.nll_loss(yhat_domain,o)
+                
+                x, y = t.next()
+                z = zero.next()
+                yhat, yhat_domain = self.forward(x)
+                loss_td = lamb * F.nll_loss(yhat_domain,z)
+                
+                loss = loss_s + loss_sd + loss_td
+                loss.backward()
+                opt.step()
+                run_loss += loss.item()
+
+                if print_info == True and i % every_iter == 0 and i != 0:
+                    print('Loss: {}'.format(run_loss/i))
+                    print('Train accuracy on source domain: {}'\
+                          .format(split_pred_accuracy(self, sourceTrain)))
+                    print('Train accuracy on target domains (different rpm): {}'\
+                          .format(split_pred_accuracy(self, targetTrain)))
+                    try:
+                        print('Test accuracy on source domain: {}'\
+                              .format(split_pred_accuracy(self, sourceTest)))       
+                        print('Test accuracy on target domains (different rpm): {}'\
+                              .format(split_pred_accuracy(self, targetTrain))) 
+                    except:
+                        pass                       
         return None
             
             

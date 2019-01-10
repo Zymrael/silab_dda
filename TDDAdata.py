@@ -9,6 +9,7 @@ import numpy as np
 from torch.utils.data import *
 from sklearn.model_selection import train_test_split
 import torch
+from .utils import sorted_alphanumeric
 
 class TDDA_loader():
     '''
@@ -19,7 +20,7 @@ class TDDA_loader():
     def __init__(self, PATH, split = 1, npy_flag = True, drop_transient = True):
         self.data = []
         if npy_flag:
-            for file in os.listdir(PATH):
+            for file in sorted_alphanumeric(os.listdir(PATH)):
                 self.data.append(np.load(f'{PATH}'f'{file}'))
         else:
             # if needed, implement loading from mat
@@ -54,9 +55,9 @@ class TDDA_loader():
         # count how many data points in source and target domains
         src_count = {}
         tgt_count = {}
-        
+          
         for i,d in enumerate(self.data):
-            data = np.concatenate([self.data[i][:,:d.shape[1]] for i in range(len(self.data))])
+            data = np.concatenate([self.data[i][:,:d.shape[1]-1] for i in range(len(self.data))])
             label = np.concatenate([self.data[i][:,d.shape[1]-1] for i in range(len(self.data))])
         
         # shift down to 0,1,2,3 instead of 1,2,3,4
@@ -92,4 +93,46 @@ class TDDA_loader():
             print('Number of examples in the dataloader: {}'.format(len(trainloader)))
             print('Source, target domain data points in train dataloader: {}, {}.'\
                  .format(src_count[0], tgt_count[0]))
-            return trainloader       
+            return trainloader    
+        
+    def getSplitDataLoader(self, sz_sourceDomain = 1600, num_workers = 0, shuffle = True, batch_size = 1):
+        data_list = []
+        data = []
+        label= []
+        # count how many data points in source and target domains
+        src_count = {}
+        tgt_count = {}
+         
+        assert self.split <= 1 and self.split >= 0, 'Split percentage not between 0 and 1'
+        
+        sr_train, sr_test, sr_y_train, sr_y_test = train_test_split(self.data[0][:,:self.data[0][0,:].shape[0]-1],\
+                 self.data[0][:,self.data[0][0,:].shape[0]-1]-1, test_size=1-self.split)
+        
+        for i,d in enumerate(self.data):
+            data = np.concatenate([self.data[i][:,:d.shape[1]] for i in range(len(self.data))])
+            label = np.concatenate([self.data[i][:,d.shape[1]-1] for i in range(len(self.data))])
+        
+        # shift down to 0,1,2,3 instead of 1,2,3,4
+        label = label - 1
+                
+        # dependency on sklearn.cross_validation / can be eliminated                      
+        tr_train, tr_test, tr_y_train, tr_y_test = train_test_split(data, label, test_size=1-self.split)
+        
+        sr_train = TensorDataset(torch.Tensor(sr_train), torch.Tensor(sr_y_train).to(torch.long))
+        sr_test = TensorDataset(torch.Tensor(sr_test), torch.Tensor(sr_y_test).to(torch.long))
+        tr_train = TensorDataset(torch.Tensor(tr_train), torch.Tensor(tr_y_train).to(torch.long))
+        tr_test = TensorDataset(torch.Tensor(tr_test), torch.Tensor(tr_y_test).to(torch.long)) 
+        
+        sourceTrainLoader = DataLoader(sr_train, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+        sourceTestLoader = DataLoader(sr_test, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
+        targetTrainLoader = DataLoader(tr_train, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
+        targetTestLoader = DataLoader(tr_test, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
+                
+        print('Number of examples in source domain train and test dataloaders: train = {}, test = {}.'\
+              .format(len(sourceTrainLoader), len(sourceTestLoader)))
+        print('Number of examples in target domain train and test dataloaders: train = {}, test = {}.'\
+              .format(len(targetTrainLoader), len(targetTestLoader)))
+        return (sourceTrainLoader, sourceTestLoader, targetTrainLoader, targetTestLoader)
+
+       
+        

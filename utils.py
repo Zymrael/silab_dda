@@ -5,6 +5,7 @@ Created on Tue Nov 20 22:27:26 2018
 @author: Zymieth
 """
 from .imports import *
+import re
 
 def get_power(time_series, ch):
     '''
@@ -29,6 +30,8 @@ def pred_accuracy(m, valloader, val_size, domain_adaptation = False, source_incl
     '''
     Calculates accuracy from a given model and test DataLoader
     For regular non-domain adaptation application, leave as-is
+    :inputs loaders assumed to have a third iterable containing the domain label
+    For use with split Loaders, use split_pred_accuracy
     '''
     m.eval()
     count = 0
@@ -48,12 +51,14 @@ def pred_accuracy(m, valloader, val_size, domain_adaptation = False, source_incl
             
         if dom_flag == 1:
             # sampled example from source domain, increase count
-            numberSourceDomain += 0
+            numberSourceDomain += 1
         if not domain_adaptation and dom_flag == 0:
             # sampled from target domain. if not in a domain adaptation scenario, count
             numberTargetDomain += 1
-
-        pr = m(x_val)
+        try:
+            pr,_ = m(x_val)
+        except:
+            pr = m(x_val)
         val, indx = torch.max(pr,1)
         if y_val - indx == 0:
             if (source_included and dom_flag == 1):
@@ -62,11 +67,24 @@ def pred_accuracy(m, valloader, val_size, domain_adaptation = False, source_incl
                 count_tr += 1
             else:
                 pass
-                   
+                  
     if (source_included and domain_adaptation): return (count_tr+count_sr)/int(val_size)
     elif domain_adaptation and not source_included: return  count_tr/int(val_size-numberSourceDomain)
     else: return count_sr/int(val_size - numberTargetDomain)
 
+def split_pred_accuracy(m, valloader):
+    count = 0
+    for i, data in enumerate(valloader):
+        x_val, y_val = data
+        try:
+            pr,_ = m(x_val)
+        except:
+            pr = m(x_val)
+        val, indx = torch.max(pr,1)
+        if y_val - indx == 0:
+            count += 1
+    return count/len(valloader)
+    
 class Attention(nn.Module):
     '''
     Scaled dot product attention
@@ -114,3 +132,8 @@ def readFromFolder(PATH):
         x = sio.loadmat(f'{PATH}'+ file, appendmat=True)
         list_of_data.append(x)
     return list_of_data
+
+def sorted_alphanumeric(data):
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ] 
+    return sorted(data, key=alphanum_key)
