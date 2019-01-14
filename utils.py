@@ -75,7 +75,12 @@ def pred_accuracy(m, valloader, val_size, domain_adaptation = False, source_incl
 def split_pred_accuracy(m, valloader):
     count = 0
     for i, data in enumerate(valloader):
-        x_val, y_val = data
+        #try with triple iterable dataloader: x, y, rpm label
+        try:
+            x_val, y_val,_ = data  
+        except:            
+            x_val, y_val = data
+        #try with double output network e.g DANN
         try:
             pr,_ = m(x_val)
         except:

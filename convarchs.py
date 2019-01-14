@@ -38,13 +38,22 @@ def grad_reverse(x):
 
 
 class simple_CNN(nn.Module):
-    def __init__(self, conv_layers, num_units = 1964, output_dim = 4):
+    def __init__(self, conv_layers, dense_layers, smax_l = True):
+        '''
+        smax_l: leave True for softmax applied to ouput
+        '''
         super().__init__()
         self.conv_layers = nn.ModuleList([nn.Conv1d(conv_layers[i], conv_layers[i + 1], kernel_size = 10, dilation=1) 
                                      for i in range(len(conv_layers) - 1)])
-        self.dense_layers = nn.ModuleList([nn.Linear(num_units, output_dim)])
+        self.dense_layers = nn.ModuleList([nn.Linear(dense_layers[i], dense_layers[i + 1]) 
+                                     for i in range(len(dense_layers) - 1)])
+# =============================================================================
+#         self.bn = nn.ModuleList([nn.BatchNorm1d()])
+# =============================================================================
         #self.noise = GaussianNoise(0.05)
         self.max = nn.MaxPool1d(2)
+        self.smax = smax_l
+        self.bn = nn.BatchNorm1d(12)
     def forward(self, x):
         x = x.view(x.size(0), 1, -1)
         #if self.training():
@@ -57,7 +66,23 @@ class simple_CNN(nn.Module):
         for l in self.dense_layers:
             l_x = l(x)
             x = F.relu(l_x)
-        return F.log_softmax(l_x, dim=-1)
+        if self.smax: return F.log_softmax(l_x, dim=-1)
+        else: return torch.sigmoid(l_x)
+
+class MLP(nn.Module):
+    def __init__(self, dense_layers):
+        '''
+        smax_l: leave True for softmax applied to ouput
+        '''
+        super().__init__()
+        self.dense_layers = nn.ModuleList([nn.Linear(dense_layers[i], dense_layers[i + 1]) 
+                                     for i in range(len(dense_layers) - 1)])
+    def forward(self, x):
+        x = x.view(x.size(0), 1, -1)
+        for l in self.dense_layers:
+            l_x = l(x)
+            x = F.relu(l_x)
+        return l_x
  
 class DANN(nn.Module):
     def __init__(self, feature_e, label_d, domain_d):
@@ -76,50 +101,55 @@ class DANN(nn.Module):
         label = self.label_discriminator(z)
         z1 = grad_reverse(z)
         domain = self.domain_discriminator(z1)
-        return label, domain
+        return  label,domain
     
     def domain_fit(self, optimizer = None, epochs = 3, sourceTrain = None, sourceTest = None,\
-                   targetTrain = None, targetTest = None, print_info = True, every_iter = 300):
+                   targetTrain = None, targetTest = None, print_info = True, every_iter = 300, dom_reg_l = [0.1,0.3,0.5]):
+        assert epochs == len(dom_reg_l), 'Length of domain regularizer list not equal to number of epochs'
         
         no_domain = False
         opt = optimizer
-   
+        iter_len = min(len(targetTrain),len(sourceTrain))
+        
         for epoch in range(epochs):
+            dom_reg = dom_reg_l[epoch] 
+            
             run_loss = 0
             count = 0
             s = iter(sourceTrain)
             t = iter(targetTrain)
-            onesDL = DataLoader(torch.Tensor(torch.ones(len(targetTrain))).to(torch.long),\
+            onesDL = DataLoader(torch.Tensor(torch.ones(iter_len)).to(torch.float),\
                             batch_size=sourceTrain.batch_size,shuffle=False,\
                             num_workers=sourceTrain.num_workers)
             one = iter(onesDL)
-            zerosDL = DataLoader(torch.Tensor(torch.zeros(len(targetTrain))).to(torch.long),\
+            zerosDL = DataLoader(torch.Tensor(torch.zeros(iter_len)).to(torch.float),\
                             batch_size=targetTrain.batch_size,shuffle=False,\
                             num_workers=targetTrain.num_workers)
             zero = iter(zerosDL)
                         
-            for i in range(len(sourceTrain)):
-                lamb = epoch/epochs
+            for i in range(iter_len):
+                                               
                 optimizer.zero_grad()
                 
                 x, y = s.next()   
-                o = one.next()
+                o = one.next()               
                 yhat, yhat_domain = self.forward(x)
                 loss_s = F.nll_loss(yhat,y) 
-                loss_sd = lamb * F.nll_loss(yhat_domain,o)
+                loss_sd = F.l1_loss(yhat_domain,o)
                 
                 x, y = t.next()
                 z = zero.next()
                 yhat, yhat_domain = self.forward(x)
-                loss_td = lamb * F.nll_loss(yhat_domain,z)
+                loss_td = F.l1_loss(yhat_domain,z)
                 
-                loss = loss_s + loss_sd + loss_td
+                loss = loss_s + dom_reg * (loss_sd + loss_td) 
                 loss.backward()
                 opt.step()
                 run_loss += loss.item()
 
                 if print_info == True and i % every_iter == 0 and i != 0:
-                    print('Loss: {}'.format(run_loss/i))
+                    print('Label loss: {}, domain loss (source): {}, domain loss (target): {}'\
+                          .format(loss_s, loss_sd, loss_td))
                     print('Train accuracy on source domain: {}'\
                           .format(split_pred_accuracy(self, sourceTrain)))
                     print('Train accuracy on target domains (different rpm): {}'\
@@ -128,13 +158,79 @@ class DANN(nn.Module):
                         print('Test accuracy on source domain: {}'\
                               .format(split_pred_accuracy(self, sourceTest)))       
                         print('Test accuracy on target domains (different rpm): {}'\
-                              .format(split_pred_accuracy(self, targetTrain))) 
+                              .format(split_pred_accuracy(self, targetTest))) 
                     except:
                         pass                       
         return None
             
             
         
+
+class RDANN(DANN):
+    def __init__(self, feature_e, label_d, domain_d):
+        super().__init__(feature_e, label_d, domain_d)
+    
+    def forward(self,x):
+        return super().forward(x)
+    
+    def domain_fit(self,
+                   optimizer = None,
+                   epochs = 3, 
+                   sourceTrain = None,
+                   sourceTest = None,
+                   targetTrain = None,
+                   targetTest = None,
+                   rpm_range = None,
+                   print_info = True,
+                   every_iter = 300,
+                   dom_reg_l = [0.1,0.3,0.5],
+                   dom_range = 1):
+        
+        no_domain = False
+        opt = optimizer
+        iter_len = min(len(targetTrain),len(sourceTrain))
+        
+        for epoch in range(epochs):
+            dom_reg = dom_reg_l[epoch] 
+            
+            run_loss = 0
+            count = 0
+            s = iter(sourceTrain)
+            t = iter(targetTrain)                        
+            for i in range(iter_len):                                              
+                optimizer.zero_grad()
+                
+                x, y, d = s.next()                
+                yhat, yhat_domain = self.forward(x)
+                loss_s = F.nll_loss(yhat,y) 
+                loss_sd = F.l1_loss(yhat_domain,d)/dom_range
+                
+                x, y, d = t.next()
+                yhat, yhat_domain = self.forward(x)
+                loss_td = F.l1_loss(yhat_domain,d)/dom_range
+                
+                loss = loss_s + dom_reg * (loss_sd + loss_td) 
+                loss.backward()
+                opt.step()
+                run_loss += loss.item()
+
+                if print_info == True and i % every_iter == 0 and i != 0:
+                    print('Label loss: {}, domain loss (source): {}, domain loss (target): {}'\
+                          .format(loss_s, loss_sd, loss_td))
+                    print('Train accuracy on source domain: {}'\
+                          .format(split_pred_accuracy(self, sourceTrain)))
+                    print('Train accuracy on target domains (different rpm): {}'\
+                          .format(split_pred_accuracy(self, targetTrain)))
+                    try:
+                        print('Test accuracy on source domain: {}'\
+                              .format(split_pred_accuracy(self, sourceTest)))       
+                        print('Test accuracy on target domains (different rpm): {}'\
+                              .format(split_pred_accuracy(self, targetTest))) 
+                    except:
+                        pass                       
+        return None
+        
+                    
         
 class VibNet(nn.Module):
     '''

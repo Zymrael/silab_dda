@@ -16,12 +16,18 @@ class TDDA_loader():
     :PATH to npy or mat files
     :npy_flag: whether to read npy files or mat files
     :drop_transient: drop first 0.8 of each simulation to obtain steady state data exclusively
+    :rpm_flag: if npy files are separated by domain, append corresponding rpm label to all
+    time series in the same domain. file order and rpm_labels list need to be in the same order for this
+    to work
     '''
-    def __init__(self, PATH, split = 1, npy_flag = True, drop_transient = True):
+    def __init__(self, PATH, split = 1, npy_flag = True, drop_transient = True, rpm_flag = False, rpm_labels = []):
         self.data = []
         if npy_flag:
-            for file in sorted_alphanumeric(os.listdir(PATH)):
+            for idx, file in enumerate(sorted_alphanumeric(os.listdir(PATH))):
                 self.data.append(np.load(f'{PATH}'f'{file}'))
+                if rpm_flag:
+                    self.data[idx] = np.hstack((self.data[idx],rpm_labels[idx]*np.ones((self.data[idx][:,1].size,1))))
+                else: pass
         else:
             # if needed, implement loading from mat
             pass
@@ -32,6 +38,8 @@ class TDDA_loader():
         
         # assume 100% training if not specified otherwise
         self.split = split
+        # rpm labels present in self.data
+        self.rpm = rpm_flag
     
     def getData(self, idx):
         return self.data[idx]
@@ -56,9 +64,8 @@ class TDDA_loader():
         src_count = {}
         tgt_count = {}
           
-        for i,d in enumerate(self.data):
-            data = np.concatenate([self.data[i][:,:d.shape[1]-1] for i in range(len(self.data))])
-            label = np.concatenate([self.data[i][:,d.shape[1]-1] for i in range(len(self.data))])
+        data = np.concatenate([self.data[i][:,:d.shape[1]-1] for i,d in enumerate(self.data)])
+        label = np.concatenate([self.data[i][:,d.shape[1]-1] for i,d in enumerate(self.data)])
         
         # shift down to 0,1,2,3 instead of 1,2,3,4
         label = label - 1
@@ -96,43 +103,65 @@ class TDDA_loader():
             return trainloader    
         
     def getSplitDataLoader(self, sz_sourceDomain = 1600, num_workers = 0, shuffle = True, batch_size = 1):
-        data_list = []
         data = []
         label= []
-        # count how many data points in source and target domains
-        src_count = {}
-        tgt_count = {}
          
         assert self.split <= 1 and self.split >= 0, 'Split percentage not between 0 and 1'
         
-        sr_train, sr_test, sr_y_train, sr_y_test = train_test_split(self.data[0][:,:self.data[0][0,:].shape[0]-1],\
-                 self.data[0][:,self.data[0][0,:].shape[0]-1]-1, test_size=1-self.split)
+        # if self.rpm is TRUE, prepare dataloader with three iterable quantities: x, y, rpm
+        if self.rpm:
+            sr_train, sr_test, sr_y_train, sr_y_test = train_test_split(self.data[0][:,:self.data[0][0,:].shape[0]-2],\
+            self.data[0][:,self.data[0][0,:].shape[0]-2:self.data[0][0,:].shape[0]], test_size=1-self.split)
+            sr_y_train, sr_y_test, sr_rpm_train, sr_rpm_test = sr_y_train[:,0]-1, sr_y_test[:,0]-1, sr_y_train[:,1], sr_y_test[:,1] 
+            
+            data = np.concatenate([d[:,:d.shape[1]-2] for i,d in enumerate(self.data[1:])])
+            label = np.concatenate([d[:,d.shape[1]-2:d.shape[1]] for i,d in enumerate(self.data[1:])])
+            # shift down to 0,1,2,3 instead of 1,2,3,4. for source data, shift happens in the previous block
+            label[:,0] = label[:,0] - 1
+                    
+            # dependency on sklearn.cross_validation / can be eliminated                      
+            tr_train, tr_test, tr_y_train, tr_y_test = train_test_split(data, label, test_size=1-self.split)
+            tr_y_train, tr_y_test, tr_rpm_train, tr_rpm_test = tr_y_train[:,0], tr_y_test[:,0], tr_y_train[:,1], tr_y_test[:,1]
         
-        for i,d in enumerate(self.data):
-            data = np.concatenate([self.data[i][:,:d.shape[1]] for i in range(len(self.data))])
-            label = np.concatenate([self.data[i][:,d.shape[1]-1] for i in range(len(self.data))])
+        else:
+            sr_train, sr_test, sr_y_train, sr_y_test = train_test_split(self.data[0][:,:self.data[0][0,:].shape[0]-1],\
+                self.data[0][:,self.data[0][0,:].shape[0]-1]-1, test_size=1-self.split)
         
-        # shift down to 0,1,2,3 instead of 1,2,3,4
-        label = label - 1
-                
-        # dependency on sklearn.cross_validation / can be eliminated                      
-        tr_train, tr_test, tr_y_train, tr_y_test = train_test_split(data, label, test_size=1-self.split)
+            data = np.concatenate([d[:,:d.shape[1]-1] for i,d in enumerate(self.data[1:])])
+            label = np.concatenate([d[:,d.shape[1]-1] for i,d in enumerate(self.data[1:])])
+            # shift down to 0,1,2,3 instead of 1,2,3,4
+            label = label - 1
+                    
+            # dependency on sklearn.cross_validation / can be eliminated                      
+            tr_train, tr_test, tr_y_train, tr_y_test = train_test_split(data, label, test_size=1-self.split)
         
-        sr_train = TensorDataset(torch.Tensor(sr_train), torch.Tensor(sr_y_train).to(torch.long))
-        sr_test = TensorDataset(torch.Tensor(sr_test), torch.Tensor(sr_y_test).to(torch.long))
-        tr_train = TensorDataset(torch.Tensor(tr_train), torch.Tensor(tr_y_train).to(torch.long))
-        tr_test = TensorDataset(torch.Tensor(tr_test), torch.Tensor(tr_y_test).to(torch.long)) 
-        
-        sourceTrainLoader = DataLoader(sr_train, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
-        sourceTestLoader = DataLoader(sr_test, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
-        targetTrainLoader = DataLoader(tr_train, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
-        targetTestLoader = DataLoader(tr_test, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
+        try:
+            sr_train_data = TensorDataset(torch.Tensor(sr_train), torch.Tensor(sr_y_train).to(torch.long),\
+                                     torch.Tensor(sr_rpm_train))
+            sr_test_data = TensorDataset(torch.Tensor(sr_test), torch.Tensor(sr_y_test).to(torch.long),\
+                                    torch.Tensor(sr_rpm_test))
+            tr_train_data = TensorDataset(torch.Tensor(tr_train), torch.Tensor(tr_y_train).to(torch.long),\
+                                     torch.Tensor(tr_rpm_train))
+            tr_test_data = TensorDataset(torch.Tensor(tr_test), torch.Tensor(tr_y_test).to(torch.long),\
+                                    torch.Tensor(tr_rpm_test)) 
+            
+        except:                            
+            sr_train_data = TensorDataset(torch.Tensor(sr_train), torch.Tensor(sr_y_train).to(torch.long))
+            sr_test_data = TensorDataset(torch.Tensor(sr_test), torch.Tensor(sr_y_test).to(torch.long))
+            tr_train_data = TensorDataset(torch.Tensor(tr_train), torch.Tensor(tr_y_train).to(torch.long))
+            tr_test_data = TensorDataset(torch.Tensor(tr_test), torch.Tensor(tr_y_test).to(torch.long)) 
+               
+        sourceTrainLoader = DataLoader(sr_train_data, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+        sourceTestLoader = DataLoader(sr_test_data, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
+        targetTrainLoader = DataLoader(tr_train_data, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
+        targetTestLoader = DataLoader(tr_test_data, batch_size=batch_size,shuffle=shuffle, num_workers=num_workers)
                 
         print('Number of examples in source domain train and test dataloaders: train = {}, test = {}.'\
               .format(len(sourceTrainLoader), len(sourceTestLoader)))
         print('Number of examples in target domain train and test dataloaders: train = {}, test = {}.'\
               .format(len(targetTrainLoader), len(targetTestLoader)))
         return (sourceTrainLoader, sourceTestLoader, targetTrainLoader, targetTestLoader)
+    
 
        
         
